@@ -218,7 +218,7 @@ class AbstractTank:
         self.angle = 65
         self.x, self.y = start_pos
         self.acceleration = 0.08
-        self.last_bouce_sound = 0
+        self.last_bounce_sound = 0
         
     def rotate(self, left = False, right = False):
         if left:
@@ -299,68 +299,91 @@ def interpolate_points(p1, p2, n):
     ]
 
 def run_genetic_algorithm():
+
     class SimulatedTank(AbstractTank):
         def __init__(self):
             super().__init__(3, 2.4, (603, 380))
             self.collisions = 0
-            self.progress = 0
 
         def reset(self):
-            self.x = 603
-            self.y = 380
+            self.x, self.y = START_POS
             self.angle = 65
             self.v = 0
             self.collisions = 0
-            self.next_checkpoint = 0
 
-    def random_waypoint():
-        return (random.randint(50, WIDTH-50), random.randint(50, HEIGHT-50))
+    # =====================
+    # PARAMETERS
+    # =====================
+    POPULATION = 30
+    GENERATIONS = 40
+    MUTATION = 0.3
+    SUBDIVISIONS = 30
+    WAYPOINT_RADIUS = 25
+    MAX_TIME = FPS * 20
+    MAX_STEP = 40
 
-    NUM_CHECKPOINTS = len(CHECKPOINTS)
-    OFFSET_RANGE = 10
-    def random_offset():
-        return (random.uniform(-OFFSET_RANGE, OFFSET_RANGE), random.uniform(-OFFSET_RANGE, OFFSET_RANGE))
-    POPULATION = 10
-    GENERATIONS = 20
-    MUTATION = 0.5
+    START_POS = (603, 380)
+
+    # =====================
+    # BUILD BASE LINE
+    # =====================
     BASE_POINTS = []
-    SUBDIVISIONS = 50
     for i in range(len(CHECKPOINTS)):
         p1 = CHECKPOINTS[i][1]
         p2 = CHECKPOINTS[(i + 1) % len(CHECKPOINTS)][1]
         BASE_POINTS.extend(interpolate_points(p1, p2, SUBDIVISIONS))
 
+    # =====================
+    # GENOME
+    # =====================
     def random_trajectory():
-        traj = []
-        for x, y in BASE_POINTS:
-            dx = random.uniform(-20, 20)
-            dy = random.uniform(-20, 20)
-            traj.append((x + dx, y + dy))
+        traj = [START_POS]  # force start
+        for x, y in BASE_POINTS[1:]:
+            traj.append((
+                x + random.uniform(-20, 20),
+                y + random.uniform(-20, 20)
+            ))
         return traj
-    
-    WAYPOINT_RADIUS = 20
-    MAX_TIME = FPS * 30
-    START_POS = 603, 380
 
+    # =====================
+    # FITNESS
+    # =====================
     def simulate_trajectory(traj):
         tank = SimulatedTank()
         tank.reset()
-        steps = 0
-        progress = 0
-        collisions = 0
+
         fitness = 0
-        for wx, wy in(traj):
+        steps = 0
+        current_cp = 0
+
+        prev_x, prev_y = START_POS
+
+        for x, y in traj[1:]:
+
+            # continuity penalty
+            step_dist = math.hypot(x - prev_x, y - prev_y)
+            if step_dist > MAX_STEP:
+                fitness -= (step_dist - MAX_STEP) * 5
+
+            prev_x, prev_y = x, y
+
+            # move tank toward point
             reached = False
             best_dist = float("inf")
+
             while not reached:
                 steps += 1
                 if steps > MAX_TIME:
                     return max(fitness, 0.00001)
-                
-                dx = wx - tank.x
-                dy = wy - tank.y
+
+                dx = x - tank.x
+                dy = y - tank.y
+                dist = math.hypot(dx, dy)
+                best_dist = min(best_dist, dist)
+
                 target_angle = math.degrees(math.atan2(-dx, -dy))
                 angle_diff = (target_angle - tank.angle + 180) % 360 - 180
+
                 if angle_diff > 3:
                     tank.rotate(left=True)
                 elif angle_diff < -3:
@@ -368,72 +391,90 @@ def run_genetic_algorithm():
 
                 if abs(angle_diff) > 25:
                     tank.braking()
-                if abs(angle_diff) < 3:
-                    tank.reduce_speed()
                 else:
                     tank.forward()
 
-                if tank.fully_on_mask(TRACK_LIMIT_MASK):
+                # wall collision
+                if tank.collide(TRACK_LIMIT_MASK):
                     tank.bounce()
                     tank.collisions += 1
+                if TRACK_LIMIT_MASK.get_at((int(tank.x), int(tank.y))):
+                    fitness -= 50  # every frame off-road
 
-                distance = math.hypot(dx, dy)
-                best_dist = min(best_dist, distance)
-                if distance < WAYPOINT_RADIUS:
+
+                if dist < WAYPOINT_RADIUS:
                     reached = True
-                    progress += 1
 
-            fitness += max(0, 300 + best_dist)
+            # reward closeness
+            fitness += max(0, 200 - best_dist)
 
-        lap_time = steps / FPS
-        fitness += progress * 500
-        fitness -= lap_time / 3
-        fitness -= tank.collisions * 10
-        
+            # checkpoint order
+            if current_cp < len(CHECKPOINTS):
+                cp_x, cp_y = CHECKPOINTS[current_cp][1]
+                if math.hypot(tank.x - cp_x, tank.y - cp_y) < WAYPOINT_RADIUS:
+                    current_cp += 1
+                    fitness += 1000
+            
+            if current_cp == len(CHECKPOINTS):
+                fx, fy = FINISH_POS
+                finish_dist = math.hypot(tank.x - fx, tank.y - fy)
+                fitness += max(0, 3000 - finish_dist)
+            else:
+                fitness -= 5000  # didn’t finish
+
+
+        # penalties / bonuses
+        fitness -= tank.collisions * 20
+        fitness += current_cp * 1500
+        fitness -= steps / 200
+
         return max(fitness, 0.00001)
 
+    # =====================
+    # GA CORE
+    # =====================
     def select(pop):
-        pop = sorted(pop, key=lambda x: x['fitness'], reverse=True)
+        pop.sort(key=lambda x: x["fitness"], reverse=True)
         return pop[:len(pop)//2]
 
-    def crossover(parent1, parent2):
-        cut = random.randint(1, len(parent1['traj'])-1)
-        child_traj = parent1['traj'][:cut] + parent2['traj'][cut:]
-        return {'traj': child_traj, 'fitness': 0}
+    def crossover(a, b):
+        cut = random.randint(1, len(a["traj"]) - 1)
+        return {
+            "traj": a["traj"][:cut] + b["traj"][cut:],
+            "fitness": 0
+        }
 
     def mutate(traj):
-        new_traj = []
-        for x, y in traj:
+        out = [START_POS]
+        for x, y in traj[1:]:
             if random.random() < MUTATION:
                 x += random.uniform(-15, 15)
                 y += random.uniform(-15, 15)
-            new_traj.append((x, y))
-        return new_traj
+            out.append((x, y))
+        return out
 
-    population = [{'traj': random_trajectory(), 'fitness': 0} for _ in range(POPULATION)]
+    population = [{"traj": random_trajectory(), "fitness": 0}
+                  for _ in range(POPULATION)]
 
     for gen in range(GENERATIONS):
-
-        for individual in population:
-            individual['fitness'] = simulate_trajectory(individual['traj'])
+        for ind in population:
+            ind["fitness"] = simulate_trajectory(ind["traj"])
 
         population = select(population)
+
         next_gen = []
-
         while len(next_gen) < POPULATION:
-
             p1, p2 = random.sample(population, 2)
             child = crossover(p1, p2)
-            child['traj'] = mutate(child['traj'])
+            child["traj"] = mutate(child["traj"])
             next_gen.append(child)
 
         population = next_gen
-        best_ind = max(population, key=lambda x: x['fitness'])
-        print(f"Gen {gen+1}: Best fitness = {best_ind['fitness']:.5f}")
+        best = max(population, key=lambda x: x["fitness"])
+        print(f"Gen {gen+1}: Best fitness = {best['fitness']:.2f}")
 
-    best_traj = max(population, key=lambda x: x['fitness'])['traj']
-    print("Best trajectory", best_traj)
-    return best_traj
+    return max(population, key=lambda x: x["fitness"])["traj"]
+
 
 
 # Player inputs
