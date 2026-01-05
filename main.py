@@ -49,7 +49,7 @@ DARK = (10, 5, 10)
 #load environment assets
 TRACK = scale_image(pygame.image.load("assets/environment/track.png"), 1.5)
 PLAYABLE_LIMIT = scale_image(pygame.image.load("assets/environment/playable-border.png"), 1.5)
-PLAYABLE_LIMIIT_MASK = pygame.mask.from_surface(PLAYABLE_LIMIT)
+PLAYABLE_LIMIT_MASK = pygame.mask.from_surface(PLAYABLE_LIMIT)
 TRACK_LIMIT = scale_image(pygame.image.load("assets/environment/track-border.png"), 1.5)
 TRACK_LIMIT_MASK = pygame.mask.from_surface(TRACK_LIMIT)
 FINISH = pygame.transform.rotate(pygame.image.load("assets/environment/finish.png"), 65)
@@ -118,10 +118,12 @@ clock = pygame.time.Clock()
 
 STATE_MENU = "menu"
 STATE_GAME = "game"
-game_state = STATE_MENU
-pygame.mixer.music.play(-1)
+STATE_GA = "ga"
+game_state = STATE_GA
+#pygame.mixer.music.play(-1)
 selected_tank = 0
 player = None
+best_traj = None
 
 TANKS = [
     {"name": "KpfPz-70",
@@ -193,16 +195,16 @@ def handle_menu_input():
 
     if keys[pygame.K_LEFT]:
         selected_tank = (selected_tank - 1)% len(TANKS)
-        pygame.mixer.Sound("assets/sound/collision_sound1.mp3").play()
+        #pygame.mixer.Sound("assets/sound/collision_sound1.mp3").play()
         pygame.time.wait(150)
     if keys[pygame.K_RIGHT]:
-        selected_tank = (selected_tank - 1)% len(TANKS)
-        pygame.mixer.Sound("assets/sound/collision_sound2.mp3").play()
+        selected_tank = (selected_tank + 1)% len(TANKS)
+        #pygame.mixer.Sound("assets/sound/collision_sound2.mp3").play()
         pygame.time.wait(150)
     if keys[pygame.K_RETURN]:
         t = TANKS[selected_tank]
         player = PlayerTankCustom(t)
-        pygame.mixer.Sound("assets/sound/finish_sound1.mp3").play()
+        #pygame.mixer.Sound("assets/sound/finish_sound1.mp3").play()
         game_state = STATE_GAME
 
     # Tank specs, movements and collision
@@ -247,7 +249,7 @@ class AbstractTank:
         self.nya_until = time.time() + 0.5
         now = time.time()
         if now - self.last_bounce_sound > 0.1:
-            random.choice(BOUNCE_SOUND).play()
+            #random.choice(BOUNCE_SOUND).play()
             self.last_bounce_sound = now
 
     def draw(self, win):
@@ -284,6 +286,155 @@ class PlayerTankCustom(PlayerTank):
     def __init__(self, tank):
         super().__init__()
         self.img = tank["imgmini"]
+    
+def interpolate_points(p1, p2, n):
+    x1, y1 = p1
+    x2, y2 = p2
+    return [
+        (
+            x1 + (x2 - x1) * i / n,
+            y1 + (y2 - y1) * i / n
+        )
+        for i in range(n)
+    ]
+
+def run_genetic_algorithm():
+    class SimulatedTank(AbstractTank):
+        def __init__(self):
+            super().__init__(3, 2.4, (603, 380))
+            self.collisions = 0
+            self.progress = 0
+
+        def reset(self):
+            self.x = 603
+            self.y = 380
+            self.angle = 65
+            self.v = 0
+            self.collisions = 0
+            self.next_checkpoint = 0
+
+    def random_waypoint():
+        return (random.randint(50, WIDTH-50), random.randint(50, HEIGHT-50))
+
+    NUM_CHECKPOINTS = len(CHECKPOINTS)
+    OFFSET_RANGE = 10
+    def random_offset():
+        return (random.uniform(-OFFSET_RANGE, OFFSET_RANGE), random.uniform(-OFFSET_RANGE, OFFSET_RANGE))
+    POPULATION = 10
+    GENERATIONS = 20
+    MUTATION = 0.5
+    BASE_POINTS = []
+    SUBDIVISIONS = 50
+    for i in range(len(CHECKPOINTS)):
+        p1 = CHECKPOINTS[i][1]
+        p2 = CHECKPOINTS[(i + 1) % len(CHECKPOINTS)][1]
+        BASE_POINTS.extend(interpolate_points(p1, p2, SUBDIVISIONS))
+
+    def random_trajectory():
+        traj = []
+        for x, y in BASE_POINTS:
+            dx = random.uniform(-20, 20)
+            dy = random.uniform(-20, 20)
+            traj.append((x + dx, y + dy))
+        return traj
+    
+    WAYPOINT_RADIUS = 20
+    MAX_TIME = FPS * 30
+    START_POS = 603, 380
+
+    def simulate_trajectory(traj):
+        tank = SimulatedTank()
+        tank.reset()
+        steps = 0
+        progress = 0
+        collisions = 0
+        fitness = 0
+        for wx, wy in(traj):
+            reached = False
+            best_dist = float("inf")
+            while not reached:
+                steps += 1
+                if steps > MAX_TIME:
+                    return max(fitness, 0.00001)
+                
+                dx = wx - tank.x
+                dy = wy - tank.y
+                target_angle = math.degrees(math.atan2(-dx, -dy))
+                angle_diff = (target_angle - tank.angle + 180) % 360 - 180
+                if angle_diff > 3:
+                    tank.rotate(left=True)
+                elif angle_diff < -3:
+                    tank.rotate(right=True)
+
+                if abs(angle_diff) > 25:
+                    tank.braking()
+                if abs(angle_diff) < 3:
+                    tank.reduce_speed()
+                else:
+                    tank.forward()
+
+                if tank.fully_on_mask(TRACK_LIMIT_MASK):
+                    tank.bounce()
+                    tank.collisions += 1
+
+                distance = math.hypot(dx, dy)
+                best_dist = min(best_dist, distance)
+                if distance < WAYPOINT_RADIUS:
+                    reached = True
+                    progress += 1
+
+            fitness += max(0, 300 + best_dist)
+
+        lap_time = steps / FPS
+        fitness += progress * 500
+        fitness -= lap_time / 3
+        fitness -= tank.collisions * 10
+        
+        return max(fitness, 0.00001)
+
+    def select(pop):
+        pop = sorted(pop, key=lambda x: x['fitness'], reverse=True)
+        return pop[:len(pop)//2]
+
+    def crossover(parent1, parent2):
+        cut = random.randint(1, len(parent1['traj'])-1)
+        child_traj = parent1['traj'][:cut] + parent2['traj'][cut:]
+        return {'traj': child_traj, 'fitness': 0}
+
+    def mutate(traj):
+        new_traj = []
+        for x, y in traj:
+            if random.random() < MUTATION:
+                x += random.uniform(-15, 15)
+                y += random.uniform(-15, 15)
+            new_traj.append((x, y))
+        return new_traj
+
+    population = [{'traj': random_trajectory(), 'fitness': 0} for _ in range(POPULATION)]
+
+    for gen in range(GENERATIONS):
+
+        for individual in population:
+            individual['fitness'] = simulate_trajectory(individual['traj'])
+
+        population = select(population)
+        next_gen = []
+
+        while len(next_gen) < POPULATION:
+
+            p1, p2 = random.sample(population, 2)
+            child = crossover(p1, p2)
+            child['traj'] = mutate(child['traj'])
+            next_gen.append(child)
+
+        population = next_gen
+        best_ind = max(population, key=lambda x: x['fitness'])
+        print(f"Gen {gen+1}: Best fitness = {best_ind['fitness']:.5f}")
+
+    best_traj = max(population, key=lambda x: x['fitness'])['traj']
+    print("Best trajectory", best_traj)
+    return best_traj
+
 
 # Player inputs
 def move_player(tank):
@@ -339,6 +490,17 @@ def draw_timer(win, player):
     rect = surf.get_rect(topright=(WIDTH - 20, 10))
     win.blit(surf, rect)
 
+def draw_best_traj(win):
+    if best_traj is None:
+        return
+    for i in range(len(best_traj) - 1):
+        pygame.draw.line(
+            win,
+            (255, 0, 0),
+            best_traj[i],
+            best_traj[i + 1],
+            3
+        )
 # Draw
 def draw(win, tank):
     shake_x = random.randint(-2, 2) if player.last_bounce_sound > time.time() - 0.1 else 0
@@ -359,6 +521,8 @@ def draw(win, tank):
     if time.time() < player.nya_until:
         txt = FONT3.render("NYA~!", True, PINK)
         win.blit(txt, (player.x + 35, player.y - 15))
+
+    draw_best_traj(win)
     
     tank.draw(win)
     y = 6
@@ -394,6 +558,12 @@ while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
+        
+    if game_state == STATE_GA:
+        print("Running Genetic Algorithm...")
+        best_traj = run_genetic_algorithm()
+        print("GA finished")
+        game_state = STATE_MENU
     
     if game_state == STATE_MENU:
         draw_menu(WIN)
@@ -404,7 +574,7 @@ while running:
         draw(WIN, player)
     
     # Track limits
-    if player.collide(PLAYABLE_LIMIIT_MASK) is None:
+    if player.collide(PLAYABLE_LIMIT_MASK) is None:
         player.bounce()
     if player.fully_on_mask(TRACK_LIMIT_MASK):
         player.bounce()
@@ -475,4 +645,4 @@ while running:
         player.sector_start_time = now
         player.on_zone = True
         
-    pygame.quit
+pygame.quit()
