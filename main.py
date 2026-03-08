@@ -23,7 +23,7 @@ YELLOW = (255, 230, 50)
 WHITE  = (255, 245, 250)
 DARK   = (10, 5, 10)
 
-# ── environment assets ────────────────────────────────────────────────────────
+# assets
 TRACK          = scale_image(pygame.image.load("environment/track.png"), 1.5)
 PLAYABLE_LIMIT = scale_image(pygame.image.load("environment/playable-border.png"), 1.5)
 PLAYABLE_LIMIT_MASK = pygame.mask.from_surface(PLAYABLE_LIMIT)
@@ -47,7 +47,7 @@ CHECKPOINTS = [
     ((830, 170), (820, 210)), # 4
 ]
 
-# ── tank images ───────────────────────────────────────────────────────────────
+# tank images (and other types of misceleanous vehicles lol)
 KPFPZ70  = scale_image(pygame.image.load("tanks/KpfPz-70.png"),         0.08)
 TIGERH1  = scale_image(pygame.image.load("tanks/TigerH1.png"),          0.08)
 M48A1    = scale_image(pygame.image.load("tanks/M48A1-Pitbull.png"),    0.08)
@@ -81,7 +81,7 @@ T90APREVIEW    = scale_image(pygame.image.load("preview/T-90Apreview.png"),     
 LEOPARD2PREVIEW= scale_image(pygame.image.load("preview/Leopard2preview.png"),        0.6)
 MULTIPLAPREVIEW= scale_image(pygame.image.load("preview/1000tiplapreview.png"),       0.6)
 
-# ── window ────────────────────────────────────────────────────────────────────
+# window
 WIDTH, HEIGHT = TRACK.get_width(), TRACK.get_height()
 WIN = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Kawaii Tank Miniature!")
@@ -89,17 +89,17 @@ pygame.display.set_caption("Kawaii Tank Miniature!")
 FPS   = 90
 clock = pygame.time.Clock()
 
-# ── game states ───────────────────────────────────────────────────────────────
+# game states
 STATE_MENU     = "menu"
 STATE_GAME     = "game"
-STATE_TRAINING = "training"   # shows progress while GA runs
-STATE_AI_WATCH = "ai_watch"   # watch the trained AI drive
+STATE_TRAINING = "training"
+STATE_AI_WATCH = "ai_watch"
 
 game_state   = STATE_MENU
 selected_tank = 0
 player        = None
 best_nn       = None
-show_checkpoints = False   # press C in-game to toggle
+show_checkpoints = False
 
 TANKS = [
     {"name": "KpfPz-70",         "img": KPFPZPREVIEW,    "imgmini": KPFPZ70  },
@@ -120,9 +120,7 @@ TANKS = [
 ]
 
 
-# =============================================================================
-# Tank classes
-# =============================================================================
+# tank classes
 class AbstractTank:
     IMG = M48A1
 
@@ -135,7 +133,7 @@ class AbstractTank:
         self.x, self.y  = start_pos
         self.acceleration = 0.12
         self.last_bounce_sound = 0
-        self.bounce_cooldown = 0   # frames remaining where acceleration is locked
+        self.bounce_cooldown = 0
 
     def rotate(self, left=False, right=False, amount=None):
         if amount is not None:
@@ -240,16 +238,14 @@ class PlayerTankCustom(PlayerTank):
         self.img = tank["imgmini"]
 
 
-# =============================================================================
-# AI / Neuro-evolution
-# =============================================================================
+# AI stuff
 START_POS   = (603, 380)
 MAX_STEPS   = 1000
 POP_SIZE    = 60
 GENERATIONS = 40
 SURVIVORS   = 6
 
-# ── Raycast ───────────────────────────────────────────────────────────────────
+# raycasts (somehow that works so don't touch)
 def raycast_distance(x, y, angle, mask, max_dist=140):
     rad = math.radians(angle)
     cx  = x + 10   # approximate centre of tank sprite
@@ -264,7 +260,7 @@ def raycast_distance(x, y, angle, mask, max_dist=140):
     return 1.0
 
 
-# ── Neural Network (5 inputs → 10 hidden → 2 outputs) ────────────────────────
+# Neural Network (also don't touch)
 N_IN, N_HID, N_OUT = 10, 14, 2
 
 class NeuralNetwork:
@@ -319,7 +315,6 @@ class NeuralNetwork:
         ))
 
 
-# ── Simulation / Fitness ──────────────────────────────────────────────────────
 class SimulatedTank(AbstractTank):
     def __init__(self):
         super().__init__(vmax=3.2, vrotation=3.0, start_pos=START_POS)
@@ -387,7 +382,7 @@ def simulate_network(nn):
             tank.reduce_speed()
         tank.move()
 
-        # ── wall / bounds checks ──────────────────────────────────────────────
+        # wall and bounds check
         hit_wall = False
         if tank.out_of_bounds():
             fitness -= 2000
@@ -417,12 +412,12 @@ def simulate_network(nn):
 
         steps_since_cp += 1
 
-        # ── timeout ───────────────────────────────────────────────────────────
+        # Anti-slacker 3000
         if steps_since_cp > CP_TIMEOUT:
             fitness -= 300
             break
 
-        # ── checkpoint crossed ────────────────────────────────────────────────
+        # checkpoint crossed
         if cp < len(CHECKPOINTS):
             p1, p2 = CHECKPOINTS[cp]
             if tank_crosses_line(tank, p1, p2):
@@ -439,7 +434,7 @@ def simulate_network(nn):
     return fitness
 
 
-# ── Genetic Algorithm ─────────────────────────────────────────────────────────
+# Generational algorithm
 training_log = []   # list of (gen, best_fitness) shown on screen
 
 def train_ai():
@@ -466,7 +461,6 @@ def train_ai():
         training_log.append((gen, best_fitness))
         print(f"Gen {gen+1}/{GENERATIONS} | Best fitness: {best_fitness:.1f}")
 
-        # draw progress screen
         _draw_training_screen(gen, best_fitness)
 
         survivors  = [nn for _, nn in scored[:SURVIVORS]]
@@ -481,7 +475,6 @@ def train_ai():
             child.mutate()
             population.append(child)
 
-    # return the best of the final generation
     return max(population, key=simulate_network)
 
 
@@ -496,12 +489,10 @@ def _draw_training_screen(gen, best_fitness):
     fit = FONT.render(f"Best fitness: {best_fitness:.1f}", True, GREEN)
     WIN.blit(fit, (WIDTH // 2 - fit.get_width() // 2, 175))
 
-    # bar
     bar_w = int((gen + 1) / GENERATIONS * 400)
     pygame.draw.rect(WIN, (60, 60, 60), (WIDTH // 2 - 200, 220, 400, 20))
     pygame.draw.rect(WIN, GREEN,        (WIDTH // 2 - 200, 220, bar_w, 20))
 
-    # log
     y = 270
     for g, f in training_log[-8:]:
         line = FONT.render(f"  gen {g+1:2d}  →  {f:.0f}", True, YELLOW)
@@ -514,7 +505,7 @@ def _draw_training_screen(gen, best_fitness):
     pygame.display.update()
 
 
-# ── AI movement (used in STATE_AI_WATCH) ─────────────────────────────────────
+# AI movements/inputs
 def move_ai(tank, nn):
     inputs = _build_inputs(tank, tank.next_checkpoint)
     steer, throttle = nn.forward(inputs)
@@ -524,10 +515,6 @@ def move_ai(tank, nn):
     else:
         tank.reduce_speed()
 
-
-# =============================================================================
-# Input / UI helpers
-# =============================================================================
 def handle_menu_input():
     global selected_tank, game_state, player, best_nn
 
@@ -544,7 +531,6 @@ def handle_menu_input():
         player = PlayerTankCustom(t)
         game_state = STATE_GAME
     if keys[pygame.K_t]:
-        # T key → train the AI then watch it
         game_state = STATE_TRAINING
 
 
@@ -561,7 +547,7 @@ def move_player(tank):
         tank.reduce_speed()
 
 
-# ── Drawing ───────────────────────────────────────────────────────────────────
+# Drawing stuff
 def draw_ray(win, x, y, angle, length, color):
     rad   = math.radians(angle)
     end_x = x - math.sin(rad) * length
@@ -707,7 +693,7 @@ def tank_crosses_line(tank, p1, p2):
     return (vx * nx + vy * ny) > 0
 
 
-# ── Checkpoint / lap logic (shared for player and AI) ────────────────────────
+# checkpoint logic
 def update_checkpoints(tank):
     if tank.next_checkpoint < len(CHECKPOINTS):
         p1, p2 = CHECKPOINTS[tank.next_checkpoint]
@@ -767,9 +753,7 @@ def update_checkpoints(tank):
         tank.on_zone          = True
 
 
-# =============================================================================
-# Main loop
-# =============================================================================
+# main looooooooooooooooop
 player    = PlayerTank()
 running   = True
 
@@ -783,20 +767,17 @@ while running:
             if event.key == pygame.K_c:
                 show_checkpoints = not show_checkpoints
 
-    # ── STATE: training (blocking, but pumps events inside train_ai) ──────────
+    
     if game_state == STATE_TRAINING:
         best_nn = train_ai()
         print("Training complete!")
-        # after training, spawn a tank for the AI to drive and watch
         player     = PlayerTank()
         game_state = STATE_AI_WATCH
 
-    # ── STATE: menu ───────────────────────────────────────────────────────────
     elif game_state == STATE_MENU:
         draw_menu(WIN)
         handle_menu_input()
 
-    # ── STATE: human player ───────────────────────────────────────────────────
     elif game_state == STATE_GAME:
         move_player(player)
         player.move()
@@ -804,7 +785,6 @@ while running:
         if player.fully_on_mask(TRACK_LIMIT_MASK):
             player.bounce()
         elif player.out_of_bounds():
-            # fell through a hole — warp back to start
             player.x, player.y = 603, 380
             player.v = 0
 
@@ -812,7 +792,6 @@ while running:
         draw(WIN, player)
         pygame.display.update()
 
-    # ── STATE: watch the trained AI ───────────────────────────────────────────
     elif game_state == STATE_AI_WATCH:
         if best_nn is None:
             game_state = STATE_MENU
