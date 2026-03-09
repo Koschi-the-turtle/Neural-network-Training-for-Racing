@@ -42,9 +42,9 @@ MENUBG  = scale_image(pygame.image.load("environment/menu_background.png"), 1.5)
 # checkpoints defined as line segments (p1, p2)
 CHECKPOINTS = [
     ((325, 155), (355, 195)),   # 1
-    ((295, 420), (278, 470)),   # 2
-    ((110, 170), (140, 210)),   # 3
-    ((830, 170), (820, 210)), # 4
+    ((278, 470), (295, 420)),   # 2
+    ((140, 210), (110, 170)),   # 3
+    ((820, 210), (830, 170)), # 4
 ]
 
 # tank images (and other types of misceleanous vehicles lol)
@@ -240,10 +240,10 @@ class PlayerTankCustom(PlayerTank):
 
 # AI stuff
 START_POS   = (603, 380)
-MAX_STEPS   = 1000
-POP_SIZE    = 60
+MAX_STEPS   = 4050  # if I ain't straight up autistic that's equal to 45 seconds at 90fps, should be enough for a whole lap
+POP_SIZE    = 80
 GENERATIONS = 40
-SURVIVORS   = 6
+SURVIVORS   = 8
 
 # raycasts (somehow that works so don't touch)
 def raycast_distance(x, y, angle, mask, max_dist=140):
@@ -358,10 +358,9 @@ def simulate_network(nn):
     fitness = 0.0
 
     total_collisions = 0
-    wall_streak      = 0
     steps_since_cp   = 0
-    CP_TIMEOUT       = int(FPS * 15)
-    MAX_COLLISIONS   = 20
+    CP_TIMEOUT       = int(FPS * 20)
+    MAX_COLLISIONS   = 8
 
     def cp_midpoint(i):
         p1, p2 = CHECKPOINTS[i]
@@ -382,54 +381,64 @@ def simulate_network(nn):
             tank.reduce_speed()
         tank.move()
 
-        # wall and bounds check
-        hit_wall = False
+        # ── wall / bounds ─────────────────────────────────────────────────────
         if tank.out_of_bounds():
-            fitness -= 2000
+            fitness -= 5000
             break
+
         if tank.fully_on_mask(TRACK_LIMIT_MASK):
             tank.bounce()
-            hit_wall         = True
             total_collisions += 1
-            wall_streak      += 1
-            fitness -= 50   # flat costly penalty — no partial credit for bouncing
-            if wall_streak > 10 or total_collisions > MAX_COLLISIONS:
-                fitness -= 500
+            fitness -= 200
+            if total_collisions > MAX_COLLISIONS:
                 break
-        else:
-            wall_streak = 0
 
-        # ── only reward CLEAN forward progress — zero credit after a collision ─
-        if not hit_wall:
-            if cp < len(CHECKPOINTS):
-                mx, my   = cp_midpoint(cp)
-                dist_now = math.hypot(mx - tank.x, my - tank.y)
-                if dist_now < best_dist:          # only reward genuinely new ground
-                    fitness   += (best_dist - dist_now) * 3.0
-                    best_dist  = dist_now
+        # ── progress reward — only while moving forward ───────────────────────
+        if tank.v > 0 and cp < len(CHECKPOINTS):
+            mx, my   = cp_midpoint(cp)
+            dist_now = math.hypot(mx - tank.x, my - tank.y)
+            if dist_now < best_dist:
+                fitness   += (best_dist - dist_now) * 4.0
+                best_dist  = dist_now
 
-            fitness += tank.v * 0.1   # small speed bonus — encourages actually driving
+        fitness += max(tank.v, 0) * 0.15
 
         steps_since_cp += 1
-
-        # Anti-slacker 3000
         if steps_since_cp > CP_TIMEOUT:
-            fitness -= 300
+            fitness -= 3000
             break
 
-        # checkpoint crossed
+        # ── checkpoints ───────────────────────────────────────────────────────
         if cp < len(CHECKPOINTS):
             p1, p2 = CHECKPOINTS[cp]
             if tank_crosses_line(tank, p1, p2):
-                fitness       += 2000
+                fitness       += 3000
                 cp            += 1
                 steps_since_cp = 0
                 if cp < len(CHECKPOINTS):
                     mx, my    = cp_midpoint(cp)
                     best_dist = math.hypot(mx - tank.x, my - tank.y)
                 else:
-                    fitness += 8000
-                    break
+                    fx, fy    = FINISH_POS[0] + 30, FINISH_POS[1] + 30
+                    best_dist = math.hypot(fx - tank.x, fy - tank.y)
+                    fitness  += 3000
+
+        # ── finish line — only valid after ALL checkpoints, line cross only ───
+        # Using tank_crosses_line against a synthetic finish segment to avoid
+        # the start-position false-positive from mask overlap.
+        if cp == len(CHECKPOINTS) and cp > 0:
+            # Build a line segment from FINISH_MASK position approximation
+            finish_p1 = (FINISH_POS[0],      FINISH_POS[1] + 60)
+            finish_p2 = (FINISH_POS[0] + 60, FINISH_POS[1])
+            if tank.v > 0 and cp == len(CHECKPOINTS):
+                fx, fy   = FINISH_POS[0] + 30, FINISH_POS[1] + 30
+                dist_fin = math.hypot(fx - tank.x, fy - tank.y)
+                if dist_fin < best_dist:
+                    fitness   += (best_dist - dist_fin) * 4.0
+                    best_dist  = dist_fin
+            if tank_crosses_line(tank, finish_p1, finish_p2):
+                fitness += 15000
+                break
 
     return fitness
 
@@ -464,15 +473,28 @@ def train_ai():
         _draw_training_screen(gen, best_fitness)
 
         survivors  = [nn for _, nn in scored[:SURVIVORS]]
-        population = [nn.clone() for nn in survivors]   # elites survive as-is
+        best_score = scored[0][0]
+
+        # Always keep the single best network completely unchanged (true elitism)
+        population = [scored[0][1].clone()]
+
+        # Fill rest with crossover + mutation
+        # Weight selection toward higher-ranked survivors
+        weights = [SURVIVORS - i for i in range(SURVIVORS)]  # rank-based weights
+
         while len(population) < POP_SIZE:
-            parent_a = random.choice(survivors)
-            parent_b = random.choice(survivors)
+            parent_a = random.choices(survivors, weights=weights, k=1)[0]
+            parent_b = random.choices(survivors, weights=weights, k=1)[0]
             if parent_a is not parent_b:
                 child = parent_a.crossover(parent_b)
             else:
                 child = parent_a.clone()
-            child.mutate()
+            # adaptive mutation: mutate more aggressively if progress has stalled
+            stale = len(training_log) > 5 and all(
+                abs(training_log[-i][1] - best_score) < 50
+                for i in range(1, 6)
+            )
+            child.mutate(rate=0.20 if stale else 0.12)
             population.append(child)
 
     return max(population, key=simulate_network)
