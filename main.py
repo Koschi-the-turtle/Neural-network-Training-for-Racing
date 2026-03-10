@@ -590,7 +590,7 @@ def draw_menu(win):
     name = FONT2.render(t["name"], True, PINK)
     win.blit(name, (WIDTH // 2 - name.get_width() // 2 + 10, 340))
 
-    hint = FONT.render("← / →  switch tank   |   ENTER  play   |   T  train AI", True, (240, 190, 70))
+    hint = FONT.render("< / >  switch tank   |   ENTER  play   |   T  train AI", True, (240, 190, 70))
     win.blit(hint, (WIDTH // 2 - hint.get_width() // 2 + 10, 400))
 
     if best_nn is not None:
