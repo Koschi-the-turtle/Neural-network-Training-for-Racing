@@ -90,10 +90,11 @@ FPS   = 90
 clock = pygame.time.Clock()
 
 # game states
-STATE_MENU     = "menu"
-STATE_GAME     = "game"
-STATE_TRAINING = "training"
-STATE_AI_WATCH = "ai_watch"
+STATE_MENU          = "menu"
+STATE_GAME          = "game"
+STATE_TRAINING_INIT = "training_init"  # draws the screen first, then starts
+STATE_TRAINING      = "training"
+STATE_AI_WATCH      = "ai_watch"
 
 game_state   = STATE_MENU
 selected_tank = 0
@@ -381,7 +382,7 @@ def simulate_network(nn):
             tank.reduce_speed()
         tank.move()
 
-        # ── wall / bounds ─────────────────────────────────────────────────────
+        # wall / bounds
         if tank.out_of_bounds():
             fitness -= 5000
             break
@@ -393,7 +394,7 @@ def simulate_network(nn):
             if total_collisions > MAX_COLLISIONS:
                 break
 
-        # ── progress reward — only while moving forward ───────────────────────
+        # progress reward only while moving forward
         if tank.v > 0 and cp < len(CHECKPOINTS):
             mx, my   = cp_midpoint(cp)
             dist_now = math.hypot(mx - tank.x, my - tank.y)
@@ -408,7 +409,7 @@ def simulate_network(nn):
             fitness -= 3000
             break
 
-        # ── checkpoints ───────────────────────────────────────────────────────
+        # checkpoint
         if cp < len(CHECKPOINTS):
             p1, p2 = CHECKPOINTS[cp]
             if tank_crosses_line(tank, p1, p2):
@@ -423,7 +424,7 @@ def simulate_network(nn):
                     best_dist = math.hypot(fx - tank.x, fy - tank.y)
                     fitness  += 3000
 
-        # ── finish line — only valid after ALL checkpoints, line cross only ───
+        # finish line only valid after ALL checkpoints, line cross only
         # Using tank_crosses_line against a synthetic finish segment to avoid
         # the start-position false-positive from mask overlap.
         if cp == len(CHECKPOINTS) and cp > 0:
@@ -454,17 +455,15 @@ def train_ai():
     population = [NeuralNetwork() for _ in range(POP_SIZE)]
 
     for gen in range(GENERATIONS):
-        # pump events so the window stays responsive
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                raise SystemExit
 
-        scored = sorted(
-            [(simulate_network(nn), nn) for nn in population],
-            key=lambda x: x[0],
-            reverse=True
-        )
+        scored = []
+        for nn in population:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    raise SystemExit
+            scored.append((simulate_network(nn), nn))
+        scored.sort(key=lambda x: x[0], reverse=True)
 
         best_fitness = scored[0][0]
         training_log.append((gen, best_fitness))
@@ -501,9 +500,20 @@ def train_ai():
 
 
 def _draw_training_screen(gen, best_fitness):
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+            raise SystemExit
+
     WIN.fill(DARK)
     title = FONT2.render("Training AI…", True, PINK)
     WIN.blit(title, (WIDTH // 2 - title.get_width() // 2, 80))
+
+    if gen == -1:
+        msg = FONT.render("Preparing…", True, WHITE)
+        WIN.blit(msg, (WIDTH // 2 - msg.get_width() // 2, 160))
+        pygame.display.update()
+        return
 
     prog = FONT.render(f"Generation  {gen + 1} / {GENERATIONS}", True, WHITE)
     WIN.blit(prog, (WIDTH // 2 - prog.get_width() // 2, 140))
@@ -553,7 +563,7 @@ def handle_menu_input():
         player = PlayerTankCustom(t)
         game_state = STATE_GAME
     if keys[pygame.K_t]:
-        game_state = STATE_TRAINING
+        game_state = STATE_TRAINING_INIT
 
 
 def move_player(tank):
@@ -661,6 +671,9 @@ def draw(win, tank):
             color = GREEN if sector_time <= tank.best_sectors[i] else YELLOW
         txt = FONT.render(f"S{i+1}: {sector_time:.2f}s", True, color)
         win.blit(txt, (10, y)); y += 22
+
+    fps = FONT.render(f"FPS: {int(clock.get_fps())}", True, WHITE)
+    win.blit(fps, (WIDTH - fps.get_width() - 10, HEIGHT - 24))
 
     if game_state == STATE_AI_WATCH:
         lbl = FONT.render("AI DRIVING", True, PINK)
@@ -790,7 +803,13 @@ while running:
                 show_checkpoints = not show_checkpoints
 
     
-    if game_state == STATE_TRAINING:
+    if game_state == STATE_TRAINING_INIT:
+        # Draw the training screen once so the user sees it immediately,
+        # then switch to the real training state next frame.
+        _draw_training_screen(-1, 0)
+        game_state = STATE_TRAINING
+
+    elif game_state == STATE_TRAINING:
         best_nn = train_ai()
         print("Training complete!")
         player     = PlayerTank()
